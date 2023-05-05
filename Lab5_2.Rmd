@@ -1,0 +1,339 @@
+---
+title: "Lab5: Deployment: Model-agnostic methods"
+output: html_document
+date: '2023-04-28'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r, include=FALSE}
+#install.packages("reshape2")
+library(reshape2)
+#install.packages("ggplot2")
+library(ggplot2)
+#install.packages("fairness")
+library(fairness)
+#install.packages("plotly")
+library(plotly)
+#install.packages("dplyr")
+library(dplyr)
+library(readr)
+library(broom)
+```
+
+
+
+## 1.- One dimensional Partial Dependence Plot.
+
+
+The partial dependence plot shows the marginal effect of a feature on the predicted outcome of a previously fit model. 
+ 
+**EXERCISE:**
+Apply PDP to the regression example of predicting bike rentals. Fit a random forest approximation for the prediction of bike rentals (cnt). Use the partial dependence plot to visualize the relationships the model learned. Use the slides shown in class as model.  
+
+```{r}
+day <- read_csv("day.csv")
+
+# One-hot encoding for season
+day_feat <- cbind(day[c("cnt", "workingday", "holiday")], data.frame(model.matrix(~factor(season) - 1, day))[c(1,3:4)])
+colnames(day_feat)[4:6] <- c("Winter", "Summer", "Fall")
+
+# MISTY feature
+day_feat$MISTY <- ifelse(day$weathersit == 2, 1, 0)
+
+# RAIN feature
+day_feat$RAIN <- ifelse(day$weathersit %in% c(3, 4), 1, 0)
+
+# Denormalized temp, hum, and windspeed
+day_feat$dtemp <- day$temp * (39 - (- 8)) + (-8)
+day_feat$dhumidity <- day$hum * 100
+day_feat$dwindspeed <- day$windspeed * 67
+
+# Create a feature (days_since_2011)
+day_feat$days_since_2011 <- as.numeric(as.Date(day$dteday, "%Y-%m-%d") - as.Date("2011-01-01")) + 1
+```
+
+```{r, warning=FALSE}
+library(randomForest)
+
+day.rfor <- randomForest(cnt ~ ., data = day_feat)
+day.pred <- predict(day.rfor, data = day_feat)
+```
+
+
+```{r}
+library(pdp)
+day_var <- c("days_since_2011", "dtemp", "dhumidity", "dwindspeed")
+op <- par(mfrow=c(1, 4))
+for (i in seq_along(day_var)) {
+  partialPlot(day.rfor, 
+              day_feat, 
+              day_var[i], 
+              xlab = day_var[i],
+              main = paste("PDP", day_var[i]))
+}
+par(op)
+```
+
+
+**QUESTION:**
+**Analyse the influence of days since 2011, temperature, humidity and wind speed on the predicted bike counts.**
+
+The variable days_since_2011 shows an incremental positive influence on the prediction of the number of bikes rented over time. It does not evolve in a linear fashion, as there appears to be a large increase in rentals, followed by a period of stability and then a few days of decline, before starting the cycle again.
+
+Temperature (dtemp) seems to have a positive and more linear influence as its value increases from 0ºC to 18-25ºC. This suggests that bike rentals may be less common in extreme temperatures, such as very cold or very hot weather.
+
+On the other hand, humidity (dhumidity) has a negative correlation with the number of rented bikes. Once the humidity value exceeds 40 and 50, the number of rentals decreases significantly. This could be, again, linked to extreme weather conditions, where people whose rental use tends to be occasional might choose other options.
+
+Finally, wind speed (dwindspeed) shows a negative influence which could be roughly linear. Where if it exceeds 5 km/h, the number of bicycle rentals again decreases drastically, bearing in mind that it can be risky to cycle in windy environments.
+
+
+## 2.- Bidimensional Partial Dependency Plot.
+
+
+**EXERCISE:**
+Generate a 2D Partial Dependency Plot with humidity and temperature to predict the number of bikes rented depending on those parameters.
+
+BE CAREFUL: due to the size, extract a set of random samples from the BBDD before generating the data for the Partial Dependency Plot. 
+
+Show the density distribution of both input features with the 2D plot as shown in the class slides. 
+
+TIP: Use geom_tile() to generate the 2D plot. Set width and height to avoid holes. 
+
+
+```{r}
+set.seed(111)
+nsam <- sample_n(day_feat, 50)
+day_sam <- day_feat[c(rownames(nsam)),]
+#rfor_sam <- day.rfor$y[c(rownames(nsam))]
+
+grid_df <- expand.grid(temp = day_sam$dtemp, hum = day_sam$dhumidity)
+
+# Use the predict function to calculate the predicted number of bike rentals for each combination of input features in the grid
+grid_df$predicted_cnt <- predict(day.rfor, newdata = grid_df)
+
+# Reshape the data for plotting
+grid_melted <- melt(grid_df, id.vars = c("dhumidity", "dtemp"), variable.name = "output", value.name = "predicted_cnt")
+
+# Plot the 2D Partial Dependency Plot with a density distribution of both input features
+ggplot(grid_melted, aes(x = temp, y = hum, fill = predicted_cnt)) + 
+  geom_tile(width = 0.9, height = 0.9) +
+  geom_density2d(data = sample_data, aes(x = temp, y = hum), alpha = 0.5) +
+  scale_fill_gradient(low = "white", high = "steelblue") +
+  labs(x = "Temperature", y = "Humidity", fill = "Predicted rentals") +
+  theme_bw()
+```
+
+```{r}
+pdp_days <- partial(day.rfor, pred.var = "days_since_2011", plot = TRUE, train = day_feat)
+pdp_temp <- partial(day.rfor, pred.var = "dtemp", plot = TRUE, train = day_feat)
+pdp_hum <- partial(day.rfor, pred.var = "dhumidity", plot = TRUE, train = day_feat)
+pdp_wind <- partial(day.rfor, pred.var = "dwindspeed", plot = TRUE, train = day_feat)
+```
+
+```{r}
+ggplot(th, aes(x = temp, y = hum, fill = p)) + geom_tile(width=40, height=40) + labs(x='Temperature', y='Humidity') +  guides(fill = guide_colourbar(title = "Number of bikes"))
+```
+
+
+```{r}
+grid <- expand.grid(temp = day_sam$dtemp, hum = day_sam$dhumidity)
+
+# Calculate the partial dependence of the number of bike rentals on temperature and humidity
+pd_temp_hum <- partialPlot(day.rfor, day_sam, x.var = c("dtemp", "dhumidity"), grid.resolution = 20)
+
+# Convert the partial dependence values to a data frame for plotting
+pd_df <- data.frame(temp = pd_temp_hum$dtemp, hum = pd_temp_hum$dhumidity, pd_cnt = pd_temp_hum$y)
+
+# Plot the density distributions of temperature and humidity
+dens_temp <- ggplot(day_sam, aes(x = dtemp)) +
+  geom_density() +
+  labs(x = "Temperature")
+
+dens_hum <- ggplot(day_sam, aes(x = dhumidity)) +
+  geom_density() +
+  labs(x = "Humidity")
+
+# Plot the 2D partial dependence plot with a tiled heatmap
+pd_plot <- ggplot(pd_df, aes(x = dtemp, y = dhumidity, fill = pd_cnt)) +
+  geom_tile(width = 0.9, height = 0.9) +
+  scale_fill_viridis_c() +
+  labs(x = "Temperature", y = "Humidity", fill = "Number of bike rentals")
+
+# Arrange the plots in a grid and display them
+plot_grid(dens_temp, dens_hum, pd_plot, ncol = 3)
+```
+
+
+```{r}
+hum_temp_pdp <- partial(day.rfor, pred.var = c("dtemp", "dhumidity", "cnt"), grid.resolution = 20, data = day_sam)
+
+# Plot the partial dependence plot
+ggplot(hum_temp_pdp, aes(x = dtemp, y = dhumidity, fill = cnt)) +
+  geom_tile() +
+  scale_fill_gradient(low = "white", high = "blue") +
+  labs(x = "Humidity", y = "Temperature", fill = "Predicted Count")
+```
+
+
+```{r}
+# Generate a new data set with random samples of the original data
+#sampled_data <- bike %>% sample_n(1000)
+
+# Compute the 2D PDP for humidity and temperature
+pdp_2d <- pdp2d(
+  model = day.rfor, 
+  pred.var = c("dhumidity", "dtemp"), 
+  pred.grid = list(seq(min(day_sam$dhumidity), max(day_sam$dhumidity), length.out = 20), 
+                   seq(min(day_sam$dtemp), max(day_sam$dtemp), length.out = 20))
+)
+
+# Convert the pdp_2d object to a data frame for plotting
+pdp_2d_df <- as.data.frame(pdp_2d)
+
+# Add density information for each combination of humidity and temperature
+densities <- MASS::kde2d(day_sam$dhumidity, day_sam$dtemp, n = 100)
+densities_df <- data.frame(
+  hum = rep(densities$x, each = length(densities$y)),
+  temp = rep(densities$y, times = length(densities$x)),
+  density = as.vector(densities$z)
+)
+
+# Create the 2D Partial Dependency Plot with density information
+ggplot(pdp_2d_df, aes(x = dhumidity, y = dtemp, fill = y)) +
+  geom_tile() +
+  scale_fill_gradientn(colors = brewer.pal(9, "Blues"), 
+                       na.value = "white",
+                       limits = c(0, max(pdp_2d_df$y))) +
+  geom_point(data = sampled_data, aes(x = dhumidity, y = dtemp, color = ..density..), 
+             size = 0.5, alpha = 0.5) +
+  scale_color_gradientn(colors = brewer.pal(9, "Greens"), 
+                        na.value = "white", 
+                        trans = "log") +
+  theme_minimal() +
+  labs(x = "Humidity", y = "Temperature", fill = "Predicted Bike Rentals", 
+       color = "Density") +
+  coord_fixed() +
+  theme(legend.position = "bottom")
+```
+
+
+```{r}
+
+```
+**QUESTION:**
+**Interpret the results.**
+
+```{r}
+
+```
+
+
+## 3.- PDP to explain the price of a house.
+
+**EXERCISE:**
+Apply the previous concepts to predict the price of a house from the database kc_house_data.csv. In this case, use again a random forest approximation for the prediction based on the features bedrooms, bathrooms, sqft_living, sqft_lot, floors and yr_built. 
+Use the partial dependence plot to visualize the relationships the model learned.
+
+BE CAREFUL: due to the size, extract a set of random samples from the BBDD before generating the data for the Partial Dependency Plot. 
+
+
+```{r}
+house <- read_csv("kc_house_data.csv")
+```
+
+```{r}
+library(randomForest)
+house.fit <- randomForest(price ~ bedrooms + bathrooms + sqft_living + sqft_lot + floors + yr_built, data = house)
+house.pred <- predict(house.fit, data = house)
+
+house_var <- c("bedrooms", "bathrooms", "sqft_living", "sqft_lot", "floors", "yr_built")
+indx <- sample(nrow(house), 500, replace = FALSE)
+house_sam <- as.data.frame(house[indx,house_var])
+```
+
+
+```{r}
+library(pdp)
+pdp_bed <- partial(house.fit, pred.var = "bedrooms", plot = TRUE, train = house_sam)
+pdp_bath <- partial(house.fit, pred.var = "bathrooms", plot = TRUE, train = house_sam)
+pdp_sqliv <- partial(house.fit, pred.var = "sqft_living", plot = TRUE, train = house_sam)
+#pdp_sqlot <- partial(house.fit, pred.var = "sqft_lot", plot = TRUE, train = house_sam)
+pdp_floor <- partial(house.fit, pred.var = "floors", plot = TRUE, train = house_sam)
+#pdp_yr <- partial(house.fit, pred.var = "yr_built", plot = TRUE, train = house_sam)
+```
+
+
+```{r}
+library(gridExtra)
+grid.arrange(pdp_bed, pdp_bath, pdp_sqliv, pdp_floor,# pdp_sqlot, pdp_yr,
+             ncol=2,
+             layout_matrix = rbind(c(1,2), c(3,4)))
+```
+
+
+
+```{r}
+library(pdp)
+op <- par(mfrow=c(2, 2))
+for (i in seq_along(house_var)) {
+  partialPlot(house.fit,
+              house_sam,
+              house_var[i], 
+              xlab = house_var[i],
+              main = paste("PDP", house_var[i]))
+}
+par(op)
+```
+
+
+
+The amount of square feet of living space (sqft_living) seems to have a linear postive infleunce on the value of the price.
+
+The influence of the number of floors on the price increases significantly more with a leap from 2 to 3, than with a leap from 1 to 2 floors.
+
+```{r}
+house_inf <- as.data.frame(house[indx,c("bedrooms", "bathrooms", "sqft_living", "floors")])
+for(c in names(house_inf))
+{
+  for(i in 1:nrow(house_sam)){
+    r <- house_sam
+    r[[c]] <- house_sam[[c]][i]
+    pred <- predict(house.fit, r)
+    house_inf[[c]][i] <- sum(pred) / nrow(house_sam)
+  }
+}
+
+p1 <- ggplot(house_sam, aes(x = bedrooms, y = house_inf$bedrooms)) + geom_line() + geom_rug(sides = "b", alpha = 0.1) +  xlab('Bedrooms') 
+p2 <- ggplot(house_sam, aes(x = bathrooms, y = house_inf$bathrooms)) + geom_line() + geom_rug(sides="b", alpha=0.1) + xlab('Bathrooms')
+p3 <- ggplot(house_sam, aes(x = sqft_living, y = house_inf$sqft_living)) + geom_line() + geom_rug(sides="b", alpha=0.1) + xlab('Sqft Living')
+p4 <- ggplot(house_sam, aes(x = floors, y = house_inf$floors))+geom_line() + geom_rug(sides="b", alpha=0.1) + xlab('Floors')
+
+subplot(p1, p2, p3, p4)
+```
+
+**QUESTION:**
+Analyse the influence of bedrooms, bathrooms, sqft_living and floors on the predicted price.
+
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
